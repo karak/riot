@@ -41,7 +41,10 @@ describe('Node', function() {
     var $ = cheerio.load(ift)
     var els = $('if-child')
     expect(els.length).to.be.equal(1)
-    expect(els.first().attr('style')).to.be.equal('display: none;')
+    // test shallow-rendering
+    /*expect(els.first().attr('style')).to.be.equal('display: none;')*/
+    expect(els.first().attr('show')).to.be.equal(false)
+    expect(els.first().html()).to.be.equal('')
   })
 
   it('render tag: attr-test', function() {
@@ -97,8 +100,9 @@ describe('Node', function() {
     var blk = riot.render('block')
     var $ = cheerio.load(blk)
     expect($('block').length).to.be.equal(1)
-    expect($('yoyo').length).to.be.equal(1)
-    expect($('yoyo').html()).to.be.equal('Hello World!')
+    expect($('yield').length).to.be.equal(1)
+    expect($('yoyo').length).to.be.equal(0)
+    expect($('yoyo').html()).to.be.equal('<yield></yield>')
   })
 
   it('render tag: yield with no html content', function() {
