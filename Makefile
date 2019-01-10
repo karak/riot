@@ -31,7 +31,7 @@ eslint:
 	@ $(ESLINT) -c ./.eslintrc src test
 
 test:
-	@ exit 0
+	@ mocha test/**/*.js
 
 test-coveralls:
 	@ RIOT_COV=1 cat ./coverage/report-lcov/lcov.info | $(COVERALLS)
