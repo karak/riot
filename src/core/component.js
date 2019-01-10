@@ -2,6 +2,7 @@ import {$, $$, getAttributes, getName, setAttributes} from '../utils/dom'
 import {COMPONENTS_CREATION_MAP, COMPONENTS_IMPLEMENTATION_MAP, MIXINS_MAP} from '../globals'
 import {bindingTypes, template as createTemplate, expressionTypes} from '@riotjs/dom-bindings'
 import {callOrAssign, defineProperties, evaluateAttributeExpressions, panic} from '../utils/misc'
+import {fromKebabCase, toKebabCase} from '../utils/kebab-case'
 import curry from 'curri'
 
 const COMPONENT_CORE = Object.freeze({
@@ -68,7 +69,7 @@ export function defineComponent({css, template, tag}) {
 function evaluateProps(element, attributeExpressions = [], scope) {
   return attributeExpressions.length ?
     evaluateAttributeExpressions(attributeExpressions, scope) :
-    getAttributes(element)
+    fromKebabCase(getAttributes(element))
 }
 
 /**
@@ -95,7 +96,7 @@ export function createComponent(component, {slots, attributes}) {
       })
 
       this.onBeforeMount()
-      shouldSetAttributes && setAttributes(this.root, this.props)
+      shouldSetAttributes && setAttributes(this.root, toKebabCase(this.props))
       this.template.mount(element, this)
       this.onMounted()
 
@@ -116,7 +117,7 @@ export function createComponent(component, {slots, attributes}) {
         ...state
       }
 
-      shouldSetAttributes && setAttributes(this.root, this.props)
+      shouldSetAttributes && setAttributes(this.root, toKebabCase(this.props))
       this.template.update(this)
       this.onUpdated()
 
