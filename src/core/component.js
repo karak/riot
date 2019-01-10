@@ -11,7 +11,7 @@ const COMPONENT_CORE = Object.freeze({
   $$(selector){ return $$(selector, this.root) },
   mixin(name) {
     // extend this component with this mixin
-    Object.assing(this, MIXINS_MAP.get(name))
+    Object.assign(this, MIXINS_MAP.get(name))
   },
   // defined during the component creation
   css: null,
