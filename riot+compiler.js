@@ -1,4 +1,4 @@
-/* Riot v4.0.0-alpha.0, @license MIT */
+/* Riot WIP, @license MIT */
 (function (global, factory) {
   typeof exports === 'object' && typeof module !== 'undefined' ? module.exports = factory() :
   typeof define === 'function' && define.amd ? define(factory) :
@@ -1851,13 +1851,81 @@
     }
   }
 
+  var commonjsGlobal = typeof window !== 'undefined' ? window : typeof global !== 'undefined' ? global : typeof self !== 'undefined' ? self : {};
+
+  function unwrapExports (x) {
+  	return x && x.__esModule && Object.prototype.hasOwnProperty.call(x, 'default') ? x.default : x;
+  }
+
+  function createCommonjsModule(fn, module) {
+  	return module = { exports: {} }, fn(module, module.exports), module.exports;
+  }
+
+  function getCjsExportFromNamespace (n) {
+  	return n && n.default || n;
+  }
+
+  var kebabCase = createCommonjsModule(function (module, exports) {
+  var KEBAB_REGEX = /[A-Z\u00C0-\u00D6\u00D8-\u00DE]/g;
+  var REVERSE_REGEX = /-[a-z\u00E0-\u00F6\u00F8-\u00FE]/g;
+
+  module.exports = exports = function kebabCase(str) {
+  	return str.replace(KEBAB_REGEX, function (match) {
+  		return '-' + match.toLowerCase();
+  	});
+  };
+
+  exports.reverse = function (str) {
+  	return str.replace(REVERSE_REGEX, function (match) {
+  		return match.slice(1).toUpperCase();
+  	});
+  };
+  });
+  var kebabCase_1 = kebabCase.reverse;
+
+  /**
+   * convert keys and values
+   *
+   * @param {{}} obj source object
+   * @param {Function} convert converting function
+   * @returns {{}} converted object
+   */
+  function convertKeyAndValue(obj, convert) {
+    return Object.entries(obj).reduce((accum, [key, value]) => {
+      const [newKey, newValue] = convert([key, value]);
+      accum[newKey] = newValue;
+      return accum
+    }, {})
+  }
+
+  /**
+   * convert keys to kebab-case from camel-case
+   *
+   * @param {{}} obj source object
+   * @returns {{}} converted object
+   */
+  function toKebabCase(obj) {
+    return convertKeyAndValue(obj, ([key, value]) => [kebabCase(key), value])
+  }
+
+  /**
+   * convert keys to camel-case from kebab-case
+   *
+   * @param {{}} obj source object
+   * @returns {{}} converted object
+   */
+  function fromKebabCase(obj) {
+    // eslint-disable-next-line fp/no-mutating-methods
+    return convertKeyAndValue(obj, ([key, value]) => [kebabCase.reverse(key), value])
+  }
+
   const COMPONENT_CORE = Object.freeze({
     // component helpers
     $(selector){ return $(selector, this.root) },
     $$(selector){ return $$(selector, this.root) },
     mixin(name) {
       // extend this component with this mixin
-      Object.assing(this, MIXINS_MAP.get(name));
+      Object.assign(this, MIXINS_MAP.get(name));
     },
     // defined during the component creation
     css: null,
@@ -1925,7 +1993,7 @@
   function evaluateProps(element, attributeExpressions = [], scope) {
     return attributeExpressions.length ?
       evaluateAttributeExpressions(attributeExpressions, scope) :
-      getAttributes(element)
+      fromKebabCase(getAttributes(element))
   }
 
   /**
@@ -1953,7 +2021,7 @@
           });
 
           this.onBeforeMount();
-          shouldSetAttributes && setAttributes(this.root, this.props);
+          shouldSetAttributes && setAttributes(this.root, toKebabCase(this.props));
           this.template.mount(element, this);
           this.onMounted();
 
@@ -1974,7 +2042,7 @@
             ...state
           };
 
-          shouldSetAttributes && setAttributes(this.root, this.props);
+          shouldSetAttributes && setAttributes(this.root, toKebabCase(this.props));
           this.template.update(this);
           this.onUpdated();
 
@@ -2113,7 +2181,7 @@
   })(slotsAndAttributes);
 
   /** @type {string} current riot version */
-  const version = 'v4.0.0-alpha.0';
+  const version = 'WIP';
 
   // expose some internal stuff that might be used from external tools
   const __ = {
@@ -2131,20 +2199,6 @@
     version: version,
     __: __
   });
-
-  var commonjsGlobal = typeof window !== 'undefined' ? window : typeof global !== 'undefined' ? global : typeof self !== 'undefined' ? self : {};
-
-  function unwrapExports (x) {
-  	return x && x.__esModule && Object.prototype.hasOwnProperty.call(x, 'default') ? x.default : x;
-  }
-
-  function createCommonjsModule(fn, module) {
-  	return module = { exports: {} }, fn(module, module.exports), module.exports;
-  }
-
-  function getCjsExportFromNamespace (n) {
-  	return n && n.default || n;
-  }
 
   var _empty_module = {};
 
@@ -29479,7 +29533,7 @@
 
   var globals$3 = require$$0;
 
-  /* Riot Compiler v4.0.0-alpha.0, @license MIT */
+  /* Riot Compiler WIP, @license MIT */
 
   const TAG_LOGIC_PROPERTY = 'tag';
   const TAG_CSS_PROPERTY = 'css';
@@ -32037,11 +32091,11 @@
    * _.kebabCase('__FOO_BAR__');
    * // => 'foo-bar'
    */
-  var kebabCase = _createCompounder(function(result, word, index) {
+  var kebabCase$1 = _createCompounder(function(result, word, index) {
     return result + (index ? '-' : '') + word.toLowerCase();
   });
 
-  var kebabcase = kebabCase;
+  var kebabcase = kebabCase$1;
 
   const GLOBAL_REGISTRY = '__riot_registry__';
   const TMP_TAG_NAME_VARIABLE = '__CURRENT_RIOT_TAG_NAME__';

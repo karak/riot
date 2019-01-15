@@ -1,4 +1,4 @@
-const { component } = require('../dist/riot/riot')
+const { component } = require('../riot')
 const { JSDOM } = require('jsdom')
 const { expect } = require('chai')
 
