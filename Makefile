@@ -24,17 +24,20 @@ CONFIG = config/
 
 GENERATED_FILES = riot.js riot+compiler.js
 
-test: eslint
+test: eslint test-karma
+
+test-karma:
+	@ $(KARMA) start test/karma.conf.js
 
 eslint:
 	# check code style
 	@ $(ESLINT) -c ./.eslintrc src test
 
-test:
-	@ mocha test/**/*.js
-
 test-coveralls:
 	@ RIOT_COV=1 cat ./coverage/report-lcov/lcov.info | $(COVERALLS)
+
+test-debug:
+	@ ${KARMA} start test/karma.conf.js --browsers=Chrome --no-single-run --watch
 
 test-sauce:
 	# run the riot tests on saucelabs

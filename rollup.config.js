@@ -1,11 +1,11 @@
-import {builtinModules} from 'module'
-import commonjs from 'rollup-plugin-commonjs'
-import ignore from 'rollup-plugin-ignore'
-import json from 'rollup-plugin-json'
-import resolve  from 'rollup-plugin-node-resolve'
-import strip from 'rollup-plugin-strip'
+const {builtinModules}= require('module')
+const commonjs = require('rollup-plugin-commonjs')
+const ignore = require('rollup-plugin-ignore')
+const json = require('rollup-plugin-json')
+const resolve = require('rollup-plugin-node-resolve')
+const strip = require('rollup-plugin-strip')
 
-export default {
+module.exports = {
   context: 'null',
   moduleContext: 'null',
   output: {
@@ -13,11 +13,15 @@ export default {
     format: 'umd',
     name: 'riot'
   },
+  onwarn: function(error) {
+    if (/external dependency|Circular dependency/.test(error.message)) return
+    console.error(error.message) // eslint-disable-line
+  },
   plugins: [
     strip({
       debugger: true,
       // defaults to `[ 'console.*', 'assert.*' ]`
-      functions: [ 'assert.*', 'debug', 'alert' ],
+      functions: ['assert.*', 'debug', 'alert'],
       sourceMap: false
     }),
     ignore(builtinModules),

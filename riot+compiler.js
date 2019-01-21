@@ -1,4 +1,4 @@
-/* Riot WIP, @license MIT */
+/* Riot v4.0.0-alpha.4, @license MIT */
 (function (global, factory) {
   typeof exports === 'object' && typeof module !== 'undefined' ? module.exports = factory() :
   typeof define === 'function' && define.amd ? define(factory) :
@@ -7,14 +7,16 @@
 
   const
     COMPONENTS_IMPLEMENTATION_MAP = new Map(),
-    COMPONENTS_CREATION_MAP = new WeakMap(),
     MIXINS_MAP = new Map(),
+    PLUGINS_SET = new Set(),
+    DOM_COMPONENT_INSTANCE_PROPERTY = Symbol('riot-component'),
     IS_DIRECTIVE = 'is';
 
   var globals = /*#__PURE__*/Object.freeze({
     COMPONENTS_IMPLEMENTATION_MAP: COMPONENTS_IMPLEMENTATION_MAP,
-    COMPONENTS_CREATION_MAP: COMPONENTS_CREATION_MAP,
     MIXINS_MAP: MIXINS_MAP,
+    PLUGINS_SET: PLUGINS_SET,
+    DOM_COMPONENT_INSTANCE_PROPERTY: DOM_COMPONENT_INSTANCE_PROPERTY,
     IS_DIRECTIVE: IS_DIRECTIVE
   });
 
@@ -62,7 +64,7 @@
    * @returns {*} anything
    */
   function callOrAssign(source) {
-    return isFunction(source) ? source() : source
+    return isFunction(source) ? (source.constructor.name ? new source() : source()) : source
   }
 
   // doese simply nothing
@@ -226,19 +228,6 @@
       acc[attribute.name] = attribute.value;
       return acc
     }, {})
-  }
-
-  /**
-   * Set multiple DOM attributes
-   * @param   {HTMLElement} element target element
-   * @param   {Object} attributes - object containing the attributes key values
-   * @returns {HTMLElement} - the original element received
-   */
-  function setAttributes(element, attributes) {
-    Object.entries(attributes).forEach(([key, value]) => {
-      setAttribute(element, key, value);
-    });
-    return element
   }
 
   /**
@@ -894,26 +883,6 @@
     return futureNodes;
   };
 
-  /**
-   * Safe expression/bindings value evaluation, in case of errors we return a fallback value
-   * @param   {Function} fn  - function to evaluate
-   * @param   {*}        fallback - a fallback return value
-   * @param   {boolean}  debug - if true the error will be logged
-   * @returns {*} result of the computation or a fallback value
-   */
-
-  function evalOrFallback(fn, fallback, debug) {
-    try {
-      return fn()
-    } catch (error) {
-      if (debug) {
-        console.error(debug); // eslint-disable-line
-      }
-
-      return fallback
-    }
-  }
-
   const EachBinding = Object.seal({
     // dynamic binding properties
     childrenMap: null,
@@ -935,7 +904,7 @@
     },
     update(scope) {
       const { placeholder } = this;
-      const collection = evalOrFallback(() => this.evaluate(scope), []);
+      const collection = this.evaluate(scope);
       const items = collection ? Array.from(collection) : [];
       const parent = placeholder.parentNode;
 
@@ -1038,7 +1007,7 @@
         return
       }
 
-      const tag = oldItem ? oldItem.tag : template.clone(root);
+      const tag = oldItem ? oldItem.tag : template.clone();
       const el = oldItem ? tag.el : root.cloneNode();
 
       if (!oldItem) {
@@ -1081,7 +1050,7 @@
       offset,
       condition,
       evaluate,
-      template,
+      template: template.createDOM(node),
       getKey,
       indexName,
       itemName,
@@ -1105,7 +1074,7 @@
       return this.update(scope)
     },
     update(scope) {
-      const value = !!evalOrFallback(() => this.evaluate(scope), false);
+      const value = !!this.evaluate(scope);
       const mustMount = !this.value && value;
       const mustUnmount = this.value && !value;
 
@@ -1113,7 +1082,7 @@
       case mustMount:
         swap(this.node, this.placeholder);
         if (this.template) {
-          this.template = this.template.clone(this.node);
+          this.template = this.template.clone();
           this.template.mount(this.node, scope);
         }
         break
@@ -1152,7 +1121,7 @@
       node,
       evaluate,
       placeholder: document.createTextNode(''),
-      template
+      template: template.createDOM(node)
     }
   }
 
@@ -1232,7 +1201,7 @@
    * @returns {string} the node attribute modifier method name
    */
   function getMethod(value) {
-    return value ? SET_ATTIBUTE : REMOVE_ATTRIBUTE
+    return value && typeof value !== 'object' ? SET_ATTIBUTE : REMOVE_ATTRIBUTE
   }
 
   /**
@@ -1245,8 +1214,7 @@
     // be sure that expressions like selected={ true } will be always rendered as selected='selected'
     if (value === true) return name
 
-    // array values will be joined with spaces
-    return Array.isArray(value) ? value.join(' ') : value
+    return value
   }
 
   /**
@@ -1637,6 +1605,18 @@
     dom: null,
     el: null,
 
+    /**
+     * Create the template DOM structure that will be cloned on each mount
+     * @param   {HTMLElement} el - the root node
+     * @returns {TemplateChunk} self
+     */
+    createDOM(el) {
+      // make sure that the DOM gets created before cloning the template
+      this.dom = this.dom || createTemplateDOM(el, this.html);
+
+      return this
+    },
+
     // API methods
     /**
      * Attach the template to a DOM node
@@ -1651,8 +1631,8 @@
 
       this.el = el;
 
-      // create lazily the template fragment only once if it hasn't been created before
-      this.dom = this.dom || createTemplateDOM(el, this.html);
+      // create the DOM if it wasn't created before
+      this.createDOM(el);
 
       if (this.dom) injectDOM(el, this.dom.cloneNode(true));
 
@@ -1694,13 +1674,9 @@
     },
     /**
      * Clone the template chunk
-     * @param   {HTMLElement} el - template target DOM node
      * @returns {TemplateChunk} a clone of this object resetting the this.el property
      */
-    clone(el) {
-      // make sure that the DOM gets created before cloning the template
-      this.dom = this.dom || createTemplateDOM(el, this.html);
-
+    clone() {
       return {
         ...this,
         el: null
@@ -1780,6 +1756,108 @@
    * )
    */
 
+  /**
+   * Binding responsible for the slots
+   */
+  const Slot = Object.seal({
+    // dynamic binding properties
+    node: null,
+    name: null,
+    template: null,
+
+    // API methods
+    mount(scope) {
+      if (!this.template) {
+        this.node.parentNode.removeChild(this.node);
+      } else {
+        this.template.mount(this.node, scope);
+        moveSlotInnerContent(this.node);
+      }
+
+      return this
+    },
+    update(scope) {
+      if (!this.template) return this
+      this.template.update(scope);
+
+      return this
+    },
+    unmount(scope) {
+      if (!this.template) return this
+      this.template.unmount(scope);
+
+      return this
+    }
+  });
+
+  /**
+   * Move the inner content of the slots outside of them
+   * @param   {HTMLNode} slot - slot node
+   * @returns {undefined} it's a void function
+   */
+  function moveSlotInnerContent(slot) {
+    if (slot.firstChild) {
+      slot.parentNode.insertBefore(slot.firstChild, slot);
+      moveSlotInnerContent(slot);
+    }
+
+    if (slot.parentNode) {
+      slot.parentNode.removeChild(slot);
+    }
+  }
+
+  /**
+   * Create a single slot binding
+   * @param   {HTMLElement} root - component root
+   * @param   {HTMLElement} node - slot node
+   * @param   {string} options.name - slot id
+   * @param   {Array} options.slots - component slots
+   * @returns {Object} Slot binding object
+   */
+  function createSlot(root, node, { name, slots }) {
+    const templateData = slots.find(({id}) => id === name);
+
+    return {
+      ...Slot,
+      node,
+      name,
+      template: templateData && create$6(
+        templateData.html,
+        templateData.bindings
+      ).createDOM(root)
+    }
+  }
+
+  /**
+   * Create the object that will manage the slots
+   * @param   {HTMLElement} root - component root element
+   * @param   {Array} slots - slots objects containing html and bindings
+   * @return  {Object} tag like interface that will manage all the slots
+   */
+  function createSlots(root, slots) {
+    const slotNodes = $$('slot', root);
+    const slotsBindings = slotNodes.map(node => {
+      const name = getAttribute(node, 'name') || 'default';
+      return createSlot(root, node, { name, slots })
+    });
+
+    return {
+      mount(scope) {
+        slotsBindings.forEach(s => s.mount(scope));
+        return this
+      },
+      update(scope) {
+        slotsBindings.forEach(s => s.update(scope));
+        return this
+      },
+      unmount(scope) {
+        slotsBindings.forEach(s => s.unmount(scope));
+        return this
+      }
+    }
+
+  }
+
   const WIN = getWindow();
   const CSS_BY_NAME = new Map();
 
@@ -1851,85 +1929,14 @@
     }
   }
 
-  var commonjsGlobal = typeof window !== 'undefined' ? window : typeof global !== 'undefined' ? global : typeof self !== 'undefined' ? self : {};
-
-  function unwrapExports (x) {
-  	return x && x.__esModule && Object.prototype.hasOwnProperty.call(x, 'default') ? x.default : x;
-  }
-
-  function createCommonjsModule(fn, module) {
-  	return module = { exports: {} }, fn(module, module.exports), module.exports;
-  }
-
-  function getCjsExportFromNamespace (n) {
-  	return n && n.default || n;
-  }
-
-  var kebabCase = createCommonjsModule(function (module, exports) {
-  var KEBAB_REGEX = /[A-Z\u00C0-\u00D6\u00D8-\u00DE]/g;
-  var REVERSE_REGEX = /-[a-z\u00E0-\u00F6\u00F8-\u00FE]/g;
-
-  module.exports = exports = function kebabCase(str) {
-  	return str.replace(KEBAB_REGEX, function (match) {
-  		return '-' + match.toLowerCase();
-  	});
-  };
-
-  exports.reverse = function (str) {
-  	return str.replace(REVERSE_REGEX, function (match) {
-  		return match.slice(1).toUpperCase();
-  	});
-  };
-  });
-  var kebabCase_1 = kebabCase.reverse;
-
-  /**
-   * convert keys and values
-   *
-   * @param {{}} obj source object
-   * @param {Function} convert converting function
-   * @returns {{}} converted object
-   */
-  function convertKeyAndValue(obj, convert) {
-    return Object.entries(obj).reduce((accum, [key, value]) => {
-      const [newKey, newValue] = convert([key, value]);
-      accum[newKey] = newValue;
-      return accum
-    }, {})
-  }
-
-  /**
-   * convert keys to kebab-case from camel-case
-   *
-   * @param {{}} obj source object
-   * @returns {{}} converted object
-   */
-  function toKebabCase(obj) {
-    return convertKeyAndValue(obj, ([key, value]) => [kebabCase(key), value])
-  }
-
-  /**
-   * convert keys to camel-case from kebab-case
-   *
-   * @param {{}} obj source object
-   * @returns {{}} converted object
-   */
-  function fromKebabCase(obj) {
-    // eslint-disable-next-line fp/no-mutating-methods
-    return convertKeyAndValue(obj, ([key, value]) => [kebabCase.reverse(key), value])
-  }
-
-  const COMPONENT_CORE = Object.freeze({
+  const COMPONENT_CORE_HELPERS = Object.freeze({
     // component helpers
     $(selector){ return $(selector, this.root) },
     $$(selector){ return $$(selector, this.root) },
     mixin(name) {
       // extend this component with this mixin
-      Object.assign(this, MIXINS_MAP.get(name));
-    },
-    // defined during the component creation
-    css: null,
-    template: null
+      Object.assing(this, MIXINS_MAP.get(name));
+    }
   });
 
   const COMPONENT_LIFECYCLE_METHODS = Object.freeze({
@@ -1941,12 +1948,47 @@
     onUnmounted: noop
   });
 
-  const EMPTY_TEMPLATE_INTERFACE = {
+  const MOCK_TEMPLATE_INTERFACE = {
     update: noop,
     mount: noop,
     unmount: noop,
-    clone: noop
+    clone: noop,
+    createDOM: noop
   };
+
+
+  /**
+   * Create the component interface needed for the compiled components
+   * @param   {string} options.css - component css
+   * @param   {Function} options.template - functon that will return the dom-bindings template function
+   * @param   {Object} options.tag - component interface
+   * @param   {string} options.name - component name
+   * @returns {Object} component like interface
+   */
+  function createComponent({css, template: template$$1, tag, name}) {
+    const component = defineComponent({
+      css,
+      template: template$$1,
+      tag,
+      name
+    });
+
+    return slotsAndAttributes => {
+      const instance = component(slotsAndAttributes);
+
+      return {
+        mount(element, parentScope, state) {
+          return instance.mount(element, state, parentScope)
+        },
+        update(parentScope, state) {
+          return instance.update(state, parentScope)
+        },
+        unmount() {
+          return instance.unmount()
+        }
+      }
+    }
+  }
 
   /**
    * Component definition function
@@ -1960,17 +2002,17 @@
     // add the component css into the DOM
     if (css && name) cssManager.add(name, css);
 
-    return curry(createComponent)(defineProperties({
+    return curry(enhanceComponentAPI)(defineProperties({
       ...COMPONENT_LIFECYCLE_METHODS,
-      ...componentAPI,
-      // defined during the component creation
       state: {},
       props: {},
+      ...componentAPI,
+      // defined during the component creation
       slots: null,
       root: null
     }, {
       // these properties should not be overriden
-      ...COMPONENT_CORE,
+      ...COMPONENT_CORE_HELPERS,
       css,
       template: template$$1 ? template$$1(
         create$6,
@@ -1979,7 +2021,7 @@
         function(name) {
           return (componentAPI.components || {})[name] || COMPONENTS_IMPLEMENTATION_MAP.get(name)
         }
-      ) : EMPTY_TEMPLATE_INTERFACE
+      ) : MOCK_TEMPLATE_INTERFACE
     }))
   }
 
@@ -1988,74 +2030,119 @@
    * @param   {HTMLElement} element - component root
    * @param   {Array}  attributeExpressions - attribute expressions generated by the riot compiler
    * @param   {Object} scope - current scope
+   * @param   {Object} currentProps - current component properties
    * @returns {Object} attributes key value pairs
    */
-  function evaluateProps(element, attributeExpressions = [], scope) {
-    return attributeExpressions.length ?
-      evaluateAttributeExpressions(attributeExpressions, scope) :
-      fromKebabCase(getAttributes(element))
+  function evaluateProps(element, attributeExpressions = [], scope, currentProps) {
+    if (attributeExpressions.length) {
+      return scope ? evaluateAttributeExpressions(attributeExpressions, scope) : currentProps
+    }
+
+    return getAttributes(element)
   }
 
   /**
-   * Component creation factory function
+   * Create the bindings to update the component attributes
+   * @param   {Array} attributes - list of attribute bindings
+   * @returns {TemplateChunk} - template bindings object
+   */
+  function createAttributeBindings(attributes) {
+    return create$6(null, [{
+      expressions: (attributes || []).map(attr => {
+        return {
+          type: expressionTypes.ATTRIBUTE,
+          ...attr
+        }
+      })
+    }])
+  }
+
+  /**
+   * Run the component instance through all the plugins set by the user
+   * @param   {Object} component - component instance
+   * @returns {Object} the component enhanced by the plugins
+   */
+  function runPlugins(component) {
+    return [...PLUGINS_SET].forEach(fn => fn(component)) || component
+  }
+
+  /**
+   * Component creation factory function that will enhance the user provided API
    * @param   {Object} component - a component implementation previously defined
    * @param   {Array} options.slots - component slots generated via riot compiler
    * @param   {Array} options.attributes - attribute expressions generated via riot compiler
    * @returns {Riot.Component} a riot component instance
    */
-  function createComponent(component, {slots, attributes}) {
-    // if this component was manually mounted its DOM attributes are likely not attribute expressions
-    // generated via riot compiler
-    const shouldSetAttributes = attributes && attributes.length;
+  function enhanceComponentAPI(component, {slots, attributes}) {
+    const attributeBindings = createAttributeBindings(attributes);
 
     return autobindMethods(
-      defineProperties(Object.create(component), {
-        slots,
-        mount(element, state = {}, props = {}) {
-          this.props = evaluateProps(element, attributes, props);
-          this.state = callOrAssign(state);
+      runPlugins(
+        defineProperties(Object.create(component), {
+          mount(element, state = {}, props) {
+            this.props = evaluateProps(element, attributes, props, {});
 
-          defineProperties(this, {
-            root: element,
-            template: this.template.clone(element)
-          });
+            this.state = {
+              ...this.state,
+              ...callOrAssign(state)
+            };
 
-          this.onBeforeMount();
-          shouldSetAttributes && setAttributes(this.root, toKebabCase(this.props));
-          this.template.mount(element, this);
-          this.onMounted();
+            defineProperties(this, {
+              root: element,
+              attributes: attributeBindings.createDOM(element).clone(),
+              template: this.template.createDOM(element).clone()
+            });
 
-          return this
-        },
-        update(state = {}, props = {}) {
-          const newProps = evaluateProps(this.root, attributes, props);
+            // link this object to the DOM node
+            element[DOM_COMPONENT_INSTANCE_PROPERTY] = this;
 
-          if (this.onBeforeUpdate(newProps, state) === false) return
+            this.onBeforeMount();
 
-          this.props = {
-            ...this.props,
-            ...newProps
-          };
+            // handlte the template and its attributes
+            this.attributes.mount(element, props);
+            this.template.mount(element, this);
 
-          this.state = {
-            ...this.state,
-            ...state
-          };
+            // create the slots and mount them
+            defineProperty(this, 'slots', createSlots(element, slots || []));
+            this.slots.mount(props);
 
-          shouldSetAttributes && setAttributes(this.root, toKebabCase(this.props));
-          this.template.update(this);
-          this.onUpdated();
+            this.onMounted();
 
-          return this
-        },
-        unmount(removeRoot) {
-          this.onBeforeUnmount();
-          this.template.unmount(this, removeRoot === true);
-          this.onUnmounted();
+            return this
+          },
+          update(state = {}, props) {
+            const newProps = evaluateProps(this.root, attributes, props, this.props);
 
-          return this
-        }
-      }),
+            if (this.onBeforeUpdate(newProps, state) === false) return
+
+            this.props = newProps;
+
+            this.state = {
+              ...this.state,
+              ...state
+            };
+
+            if (props) {
+              this.attributes.update(props);
+              this.slots.update(props);
+            }
+
+            this.template.update(this);
+            this.onUpdated();
+
+            return this
+          },
+          unmount(removeRoot) {
+            this.onBeforeUnmount();
+            this.attributes.unmount();
+            this.slots.unmount();
+            this.template.unmount(this, removeRoot === true);
+            this.onUnmounted();
+
+            return this
+          }
+        })
+      ),
       Object.keys(component).filter(prop => isFunction(component[prop]))
     )
   }
@@ -2070,13 +2157,13 @@
   function mountComponent(element, initialState, componentName) {
     const name = componentName || getName(element);
     if (!COMPONENTS_IMPLEMENTATION_MAP.has(name)) panic(`The component named "${name}" was never registered`);
+
     const component = COMPONENTS_IMPLEMENTATION_MAP.get(name)({});
-    COMPONENTS_CREATION_MAP.set(element, component);
 
     return component.mount(element, {}, initialState)
   }
 
-  const { COMPONENTS_CREATION_MAP: COMPONENTS_CREATION_MAP$1, COMPONENTS_IMPLEMENTATION_MAP: COMPONENTS_IMPLEMENTATION_MAP$1, MIXINS_MAP: MIXINS_MAP$1 } = globals;
+  const { DOM_COMPONENT_INSTANCE_PROPERTY: DOM_COMPONENT_INSTANCE_PROPERTY$1, COMPONENTS_IMPLEMENTATION_MAP: COMPONENTS_IMPLEMENTATION_MAP$1, MIXINS_MAP: MIXINS_MAP$1, PLUGINS_SET: PLUGINS_SET$1 } = globals;
 
   /**
    * Riot public api
@@ -2091,29 +2178,7 @@
   function register(name, {css, template, tag}) {
     if (COMPONENTS_IMPLEMENTATION_MAP$1.has(name)) panic(`The component "${name}" was already registered`);
 
-    return COMPONENTS_IMPLEMENTATION_MAP$1.set(name, (...args) => {
-      const component = defineComponent({
-        css,
-        template,
-        tag,
-        name
-      })(...args);
-
-      // this object will be provided to the tag bindings generated via compiler
-      // the bindings will not be able to update the components state, they will only pass down
-      // the parentScope updates
-      return {
-        mount(element, parentScope, state) {
-          return component.mount(element, state, parentScope)
-        },
-        update(parentScope, state) {
-          return component.update(state, parentScope)
-        },
-        unmount() {
-          return component.unmount()
-        }
-      }
-    })
+    return COMPONENTS_IMPLEMENTATION_MAP$1.set(name, createComponent({name, css, template, tag}))
   }
 
   /**
@@ -2145,8 +2210,8 @@
    */
   function unmount(selector) {
     return $$(selector).map((element) => {
-      if (COMPONENTS_CREATION_MAP$1.has(element)) {
-        COMPONENTS_CREATION_MAP$1.get(element).unmount();
+      if (element[DOM_COMPONENT_INSTANCE_PROPERTY$1]) {
+        element[DOM_COMPONENT_INSTANCE_PROPERTY$1].unmount();
       }
       return element
     })
@@ -2167,25 +2232,27 @@
   }
 
   /**
-   * Function to define an anonymous component
-   * @param   {Object} component - this object should contain the component implementation,
-   * like css and/or template/render function
-   * @param   {Object} slotsAndAttributes - object containing the slots or attribute expressions
-   * you shouldn't normally need it but it might be handy for testing
-   * @returns {Riot.Component} a riot component instance
+   * Define a riot plugin
+   * @param   {Function} plugin - function that will receive all the components created
+   * @returns {Set} the set containing all the plugins installed
    */
-  const component = ({css, template, ...rest}, slotsAndAttributes = {}) => defineComponent({
-    css,
-    template,
-    tag: rest
-  })(slotsAndAttributes);
+  function install(plugin) {
+    if (!isFunction(plugin)) panic('Plugins must be of type function');
+    if (PLUGINS_SET$1.has(name)) panic('This plugin was already install');
+
+    PLUGINS_SET$1.add(plugin);
+
+    return PLUGINS_SET$1
+  }
 
   /** @type {string} current riot version */
-  const version = 'WIP';
+  const version = 'v4.0.0-alpha.4';
 
   // expose some internal stuff that might be used from external tools
   const __ = {
     cssManager,
+    createComponent,
+    defineComponent,
     globals
   };
 
@@ -2195,10 +2262,24 @@
     mount: mount,
     unmount: unmount,
     mixin: mixin,
-    component: component,
+    install: install,
     version: version,
     __: __
   });
+
+  var commonjsGlobal = typeof window !== 'undefined' ? window : typeof global !== 'undefined' ? global : typeof self !== 'undefined' ? self : {};
+
+  function unwrapExports (x) {
+  	return x && x.__esModule && Object.prototype.hasOwnProperty.call(x, 'default') ? x.default : x;
+  }
+
+  function createCommonjsModule(fn, module) {
+  	return module = { exports: {} }, fn(module, module.exports), module.exports;
+  }
+
+  function getCjsExportFromNamespace (n) {
+  	return n && n.default || n;
+  }
 
   var _empty_module = {};
 
@@ -13698,7 +13779,7 @@
   	var syntax_1 = __webpack_require__(2);
   	exports.Syntax = syntax_1.Syntax;
   	// Sync with *.json manifests.
-  	exports.version = '4.0.0';
+  	exports.version = '4.0.1';
 
 
   /***/ },
@@ -15619,11 +15700,18 @@
   	            column: this.startMarker.column
   	        };
   	    };
-  	    Parser.prototype.startNode = function (token) {
+  	    Parser.prototype.startNode = function (token, lastLineStart) {
+  	        if (lastLineStart === void 0) { lastLineStart = 0; }
+  	        var column = token.start - token.lineStart;
+  	        var line = token.lineNumber;
+  	        if (column < 0) {
+  	            column += lastLineStart;
+  	            line--;
+  	        }
   	        return {
   	            index: token.start,
-  	            line: token.lineNumber,
-  	            column: token.start - token.lineStart
+  	            line: line,
+  	            column: column
   	        };
   	    };
   	    Parser.prototype.finalize = function (marker, node) {
@@ -15955,7 +16043,7 @@
   	        var isGenerator = false;
   	        var node = this.createNode();
   	        var previousAllowYield = this.context.allowYield;
-  	        this.context.allowYield = false;
+  	        this.context.allowYield = true;
   	        var params = this.parseFormalParameters();
   	        var method = this.parsePropertyMethod(params);
   	        this.context.allowYield = previousAllowYield;
@@ -16025,7 +16113,7 @@
   	            this.nextToken();
   	            computed = this.match('[');
   	            isAsync = !this.hasLineTerminator && (id === 'async') &&
-  	                !this.match(':') && !this.match('(') && !this.match('*');
+  	                !this.match(':') && !this.match('(') && !this.match('*') && !this.match(',');
   	            key = isAsync ? this.parseObjectPropertyKey() : this.finalize(node, new Node.Identifier(id));
   	        }
   	        else if (this.match('*')) {
@@ -16624,12 +16712,15 @@
   	            // Final reduce to clean-up the stack.
   	            var i = stack.length - 1;
   	            expr = stack[i];
-  	            markers.pop();
+  	            var lastMarker = markers.pop();
   	            while (i > 1) {
-  	                var node = this.startNode(markers.pop());
+  	                var marker = markers.pop();
+  	                var lastLineStart = lastMarker && lastMarker.lineStart;
+  	                var node = this.startNode(marker, lastLineStart);
   	                var operator = stack[i - 1];
   	                expr = this.finalize(node, new Node.BinaryExpression(operator, stack[i - 2], expr));
   	                i -= 2;
+  	                lastMarker = marker;
   	            }
   	        }
   	        return expr;
@@ -17411,8 +17502,10 @@
   	        }
   	        var node = this.createNode();
   	        this.expectKeyword('return');
-  	        var hasArgument = !this.match(';') && !this.match('}') &&
-  	            !this.hasLineTerminator && this.lookahead.type !== 2 /* EOF */;
+  	        var hasArgument = (!this.match(';') && !this.match('}') &&
+  	            !this.hasLineTerminator && this.lookahead.type !== 2 /* EOF */) ||
+  	            this.lookahead.type === 8 /* StringLiteral */ ||
+  	            this.lookahead.type === 10 /* Template */;
   	        var argument = hasArgument ? this.parseExpression() : null;
   	        this.consumeSemicolon();
   	        return this.finalize(node, new Node.ReturnStatement(argument));
@@ -17977,7 +18070,7 @@
   	        var node = this.createNode();
   	        var isGenerator = false;
   	        var previousAllowYield = this.context.allowYield;
-  	        this.context.allowYield = false;
+  	        this.context.allowYield = !isGenerator;
   	        var formalParameters = this.parseFormalParameters();
   	        if (formalParameters.params.length > 0) {
   	            this.tolerateError(messages_1.Messages.BadGetterArity);
@@ -17990,7 +18083,7 @@
   	        var node = this.createNode();
   	        var isGenerator = false;
   	        var previousAllowYield = this.context.allowYield;
-  	        this.context.allowYield = false;
+  	        this.context.allowYield = !isGenerator;
   	        var formalParameters = this.parseFormalParameters();
   	        if (formalParameters.params.length !== 1) {
   	            this.tolerateError(messages_1.Messages.BadSetterArity);
@@ -18091,13 +18184,8 @@
   	                    isAsync = true;
   	                    token = this.lookahead;
   	                    key = this.parseObjectPropertyKey();
-  	                    if (token.type === 3 /* Identifier */) {
-  	                        if (token.value === 'get' || token.value === 'set') {
-  	                            this.tolerateUnexpectedToken(token);
-  	                        }
-  	                        else if (token.value === 'constructor') {
-  	                            this.tolerateUnexpectedToken(token, messages_1.Messages.ConstructorIsAsync);
-  	                        }
+  	                    if (token.type === 3 /* Identifier */ && token.value === 'constructor') {
+  	                        this.tolerateUnexpectedToken(token, messages_1.Messages.ConstructorIsAsync);
   	                    }
   	                }
   	            }
@@ -18210,6 +18298,7 @@
   	    Parser.prototype.parseModule = function () {
   	        this.context.strict = true;
   	        this.context.isModule = true;
+  	        this.scanner.isModule = true;
   	        var node = this.createNode();
   	        var body = this.parseDirectivePrologues();
   	        while (this.lookahead.type !== 2 /* EOF */) {
@@ -18630,6 +18719,7 @@
   	        this.source = code;
   	        this.errorHandler = handler;
   	        this.trackComment = false;
+  	        this.isModule = false;
   	        this.length = code.length;
   	        this.index = 0;
   	        this.lineNumber = (code.length > 0) ? 1 : 0;
@@ -18835,7 +18925,7 @@
   	                    break;
   	                }
   	            }
-  	            else if (ch === 0x3C) {
+  	            else if (ch === 0x3C && !this.isModule) {
   	                if (this.source.slice(this.index + 1, this.index + 4) === '!--') {
   	                    this.index += 4; // `<!--`
   	                    var comment = this.skipSingleLineComment(4);
@@ -29533,7 +29623,7 @@
 
   var globals$3 = require$$0;
 
-  /* Riot Compiler WIP, @license MIT */
+  /* Riot Compiler v4.0.0-alpha.4, @license MIT */
 
   const TAG_LOGIC_PROPERTY = 'tag';
   const TAG_CSS_PROPERTY = 'css';
@@ -31241,862 +31331,6 @@
   // here we can run prettifiers, eslint fixes...
   const registerPostprocessor = register$1;
 
-  /** Detect free variable `global` from Node.js. */
-  var freeGlobal = typeof commonjsGlobal == 'object' && commonjsGlobal && commonjsGlobal.Object === Object && commonjsGlobal;
-
-  var _freeGlobal = freeGlobal;
-
-  /** Detect free variable `self`. */
-  var freeSelf = typeof self == 'object' && self && self.Object === Object && self;
-
-  /** Used as a reference to the global object. */
-  var root = _freeGlobal || freeSelf || Function('return this')();
-
-  var _root = root;
-
-  /** Built-in value references. */
-  var Symbol$1 = _root.Symbol;
-
-  var _Symbol = Symbol$1;
-
-  /**
-   * A specialized version of `_.map` for arrays without support for iteratee
-   * shorthands.
-   *
-   * @private
-   * @param {Array} [array] The array to iterate over.
-   * @param {Function} iteratee The function invoked per iteration.
-   * @returns {Array} Returns the new mapped array.
-   */
-  function arrayMap(array, iteratee) {
-    var index = -1,
-        length = array == null ? 0 : array.length,
-        result = Array(length);
-
-    while (++index < length) {
-      result[index] = iteratee(array[index], index, array);
-    }
-    return result;
-  }
-
-  var _arrayMap = arrayMap;
-
-  /**
-   * Checks if `value` is classified as an `Array` object.
-   *
-   * @static
-   * @memberOf _
-   * @since 0.1.0
-   * @category Lang
-   * @param {*} value The value to check.
-   * @returns {boolean} Returns `true` if `value` is an array, else `false`.
-   * @example
-   *
-   * _.isArray([1, 2, 3]);
-   * // => true
-   *
-   * _.isArray(document.body.children);
-   * // => false
-   *
-   * _.isArray('abc');
-   * // => false
-   *
-   * _.isArray(_.noop);
-   * // => false
-   */
-  var isArray$4 = Array.isArray;
-
-  var isArray_1 = isArray$4;
-
-  /** Used for built-in method references. */
-  var objectProto = Object.prototype;
-
-  /** Used to check objects for own properties. */
-  var hasOwnProperty = objectProto.hasOwnProperty;
-
-  /**
-   * Used to resolve the
-   * [`toStringTag`](http://ecma-international.org/ecma-262/7.0/#sec-object.prototype.tostring)
-   * of values.
-   */
-  var nativeObjectToString = objectProto.toString;
-
-  /** Built-in value references. */
-  var symToStringTag = _Symbol ? _Symbol.toStringTag : undefined;
-
-  /**
-   * A specialized version of `baseGetTag` which ignores `Symbol.toStringTag` values.
-   *
-   * @private
-   * @param {*} value The value to query.
-   * @returns {string} Returns the raw `toStringTag`.
-   */
-  function getRawTag(value) {
-    var isOwn = hasOwnProperty.call(value, symToStringTag),
-        tag = value[symToStringTag];
-
-    try {
-      value[symToStringTag] = undefined;
-      var unmasked = true;
-    } catch (e) {}
-
-    var result = nativeObjectToString.call(value);
-    if (unmasked) {
-      if (isOwn) {
-        value[symToStringTag] = tag;
-      } else {
-        delete value[symToStringTag];
-      }
-    }
-    return result;
-  }
-
-  var _getRawTag = getRawTag;
-
-  /** Used for built-in method references. */
-  var objectProto$1 = Object.prototype;
-
-  /**
-   * Used to resolve the
-   * [`toStringTag`](http://ecma-international.org/ecma-262/7.0/#sec-object.prototype.tostring)
-   * of values.
-   */
-  var nativeObjectToString$1 = objectProto$1.toString;
-
-  /**
-   * Converts `value` to a string using `Object.prototype.toString`.
-   *
-   * @private
-   * @param {*} value The value to convert.
-   * @returns {string} Returns the converted string.
-   */
-  function objectToString(value) {
-    return nativeObjectToString$1.call(value);
-  }
-
-  var _objectToString = objectToString;
-
-  /** `Object#toString` result references. */
-  var nullTag = '[object Null]',
-      undefinedTag = '[object Undefined]';
-
-  /** Built-in value references. */
-  var symToStringTag$1 = _Symbol ? _Symbol.toStringTag : undefined;
-
-  /**
-   * The base implementation of `getTag` without fallbacks for buggy environments.
-   *
-   * @private
-   * @param {*} value The value to query.
-   * @returns {string} Returns the `toStringTag`.
-   */
-  function baseGetTag(value) {
-    if (value == null) {
-      return value === undefined ? undefinedTag : nullTag;
-    }
-    return (symToStringTag$1 && symToStringTag$1 in Object(value))
-      ? _getRawTag(value)
-      : _objectToString(value);
-  }
-
-  var _baseGetTag = baseGetTag;
-
-  /**
-   * Checks if `value` is object-like. A value is object-like if it's not `null`
-   * and has a `typeof` result of "object".
-   *
-   * @static
-   * @memberOf _
-   * @since 4.0.0
-   * @category Lang
-   * @param {*} value The value to check.
-   * @returns {boolean} Returns `true` if `value` is object-like, else `false`.
-   * @example
-   *
-   * _.isObjectLike({});
-   * // => true
-   *
-   * _.isObjectLike([1, 2, 3]);
-   * // => true
-   *
-   * _.isObjectLike(_.noop);
-   * // => false
-   *
-   * _.isObjectLike(null);
-   * // => false
-   */
-  function isObjectLike(value) {
-    return value != null && typeof value == 'object';
-  }
-
-  var isObjectLike_1 = isObjectLike;
-
-  /** `Object#toString` result references. */
-  var symbolTag = '[object Symbol]';
-
-  /**
-   * Checks if `value` is classified as a `Symbol` primitive or object.
-   *
-   * @static
-   * @memberOf _
-   * @since 4.0.0
-   * @category Lang
-   * @param {*} value The value to check.
-   * @returns {boolean} Returns `true` if `value` is a symbol, else `false`.
-   * @example
-   *
-   * _.isSymbol(Symbol.iterator);
-   * // => true
-   *
-   * _.isSymbol('abc');
-   * // => false
-   */
-  function isSymbol(value) {
-    return typeof value == 'symbol' ||
-      (isObjectLike_1(value) && _baseGetTag(value) == symbolTag);
-  }
-
-  var isSymbol_1 = isSymbol;
-
-  /** Used as references for various `Number` constants. */
-  var INFINITY = 1 / 0;
-
-  /** Used to convert symbols to primitives and strings. */
-  var symbolProto = _Symbol ? _Symbol.prototype : undefined,
-      symbolToString = symbolProto ? symbolProto.toString : undefined;
-
-  /**
-   * The base implementation of `_.toString` which doesn't convert nullish
-   * values to empty strings.
-   *
-   * @private
-   * @param {*} value The value to process.
-   * @returns {string} Returns the string.
-   */
-  function baseToString(value) {
-    // Exit early for strings to avoid a performance hit in some environments.
-    if (typeof value == 'string') {
-      return value;
-    }
-    if (isArray_1(value)) {
-      // Recursively convert values (susceptible to call stack limits).
-      return _arrayMap(value, baseToString) + '';
-    }
-    if (isSymbol_1(value)) {
-      return symbolToString ? symbolToString.call(value) : '';
-    }
-    var result = (value + '');
-    return (result == '0' && (1 / value) == -INFINITY) ? '-0' : result;
-  }
-
-  var _baseToString = baseToString;
-
-  /**
-   * Converts `value` to a string. An empty string is returned for `null`
-   * and `undefined` values. The sign of `-0` is preserved.
-   *
-   * @static
-   * @memberOf _
-   * @since 4.0.0
-   * @category Lang
-   * @param {*} value The value to convert.
-   * @returns {string} Returns the converted string.
-   * @example
-   *
-   * _.toString(null);
-   * // => ''
-   *
-   * _.toString(-0);
-   * // => '-0'
-   *
-   * _.toString([1, 2, 3]);
-   * // => '1,2,3'
-   */
-  function toString(value) {
-    return value == null ? '' : _baseToString(value);
-  }
-
-  var toString_1 = toString;
-
-  /**
-   * The base implementation of `_.slice` without an iteratee call guard.
-   *
-   * @private
-   * @param {Array} array The array to slice.
-   * @param {number} [start=0] The start position.
-   * @param {number} [end=array.length] The end position.
-   * @returns {Array} Returns the slice of `array`.
-   */
-  function baseSlice(array, start, end) {
-    var index = -1,
-        length = array.length;
-
-    if (start < 0) {
-      start = -start > length ? 0 : (length + start);
-    }
-    end = end > length ? length : end;
-    if (end < 0) {
-      end += length;
-    }
-    length = start > end ? 0 : ((end - start) >>> 0);
-    start >>>= 0;
-
-    var result = Array(length);
-    while (++index < length) {
-      result[index] = array[index + start];
-    }
-    return result;
-  }
-
-  var _baseSlice = baseSlice;
-
-  /**
-   * Casts `array` to a slice if it's needed.
-   *
-   * @private
-   * @param {Array} array The array to inspect.
-   * @param {number} start The start position.
-   * @param {number} [end=array.length] The end position.
-   * @returns {Array} Returns the cast slice.
-   */
-  function castSlice(array, start, end) {
-    var length = array.length;
-    end = end === undefined ? length : end;
-    return (!start && end >= length) ? array : _baseSlice(array, start, end);
-  }
-
-  var _castSlice = castSlice;
-
-  /** Used to compose unicode character classes. */
-  var rsAstralRange = '\\ud800-\\udfff',
-      rsComboMarksRange = '\\u0300-\\u036f',
-      reComboHalfMarksRange = '\\ufe20-\\ufe2f',
-      rsComboSymbolsRange = '\\u20d0-\\u20ff',
-      rsComboRange = rsComboMarksRange + reComboHalfMarksRange + rsComboSymbolsRange,
-      rsVarRange = '\\ufe0e\\ufe0f';
-
-  /** Used to compose unicode capture groups. */
-  var rsZWJ = '\\u200d';
-
-  /** Used to detect strings with [zero-width joiners or code points from the astral planes](http://eev.ee/blog/2015/09/12/dark-corners-of-unicode/). */
-  var reHasUnicode = RegExp('[' + rsZWJ + rsAstralRange  + rsComboRange + rsVarRange + ']');
-
-  /**
-   * Checks if `string` contains Unicode symbols.
-   *
-   * @private
-   * @param {string} string The string to inspect.
-   * @returns {boolean} Returns `true` if a symbol is found, else `false`.
-   */
-  function hasUnicode(string) {
-    return reHasUnicode.test(string);
-  }
-
-  var _hasUnicode = hasUnicode;
-
-  /**
-   * Converts an ASCII `string` to an array.
-   *
-   * @private
-   * @param {string} string The string to convert.
-   * @returns {Array} Returns the converted array.
-   */
-  function asciiToArray(string) {
-    return string.split('');
-  }
-
-  var _asciiToArray = asciiToArray;
-
-  /** Used to compose unicode character classes. */
-  var rsAstralRange$1 = '\\ud800-\\udfff',
-      rsComboMarksRange$1 = '\\u0300-\\u036f',
-      reComboHalfMarksRange$1 = '\\ufe20-\\ufe2f',
-      rsComboSymbolsRange$1 = '\\u20d0-\\u20ff',
-      rsComboRange$1 = rsComboMarksRange$1 + reComboHalfMarksRange$1 + rsComboSymbolsRange$1,
-      rsVarRange$1 = '\\ufe0e\\ufe0f';
-
-  /** Used to compose unicode capture groups. */
-  var rsAstral = '[' + rsAstralRange$1 + ']',
-      rsCombo = '[' + rsComboRange$1 + ']',
-      rsFitz = '\\ud83c[\\udffb-\\udfff]',
-      rsModifier = '(?:' + rsCombo + '|' + rsFitz + ')',
-      rsNonAstral = '[^' + rsAstralRange$1 + ']',
-      rsRegional = '(?:\\ud83c[\\udde6-\\uddff]){2}',
-      rsSurrPair = '[\\ud800-\\udbff][\\udc00-\\udfff]',
-      rsZWJ$1 = '\\u200d';
-
-  /** Used to compose unicode regexes. */
-  var reOptMod = rsModifier + '?',
-      rsOptVar = '[' + rsVarRange$1 + ']?',
-      rsOptJoin = '(?:' + rsZWJ$1 + '(?:' + [rsNonAstral, rsRegional, rsSurrPair].join('|') + ')' + rsOptVar + reOptMod + ')*',
-      rsSeq = rsOptVar + reOptMod + rsOptJoin,
-      rsSymbol = '(?:' + [rsNonAstral + rsCombo + '?', rsCombo, rsRegional, rsSurrPair, rsAstral].join('|') + ')';
-
-  /** Used to match [string symbols](https://mathiasbynens.be/notes/javascript-unicode). */
-  var reUnicode = RegExp(rsFitz + '(?=' + rsFitz + ')|' + rsSymbol + rsSeq, 'g');
-
-  /**
-   * Converts a Unicode `string` to an array.
-   *
-   * @private
-   * @param {string} string The string to convert.
-   * @returns {Array} Returns the converted array.
-   */
-  function unicodeToArray(string) {
-    return string.match(reUnicode) || [];
-  }
-
-  var _unicodeToArray = unicodeToArray;
-
-  /**
-   * Converts `string` to an array.
-   *
-   * @private
-   * @param {string} string The string to convert.
-   * @returns {Array} Returns the converted array.
-   */
-  function stringToArray(string) {
-    return _hasUnicode(string)
-      ? _unicodeToArray(string)
-      : _asciiToArray(string);
-  }
-
-  var _stringToArray = stringToArray;
-
-  /**
-   * Creates a function like `_.lowerFirst`.
-   *
-   * @private
-   * @param {string} methodName The name of the `String` case method to use.
-   * @returns {Function} Returns the new case function.
-   */
-  function createCaseFirst(methodName) {
-    return function(string) {
-      string = toString_1(string);
-
-      var strSymbols = _hasUnicode(string)
-        ? _stringToArray(string)
-        : undefined;
-
-      var chr = strSymbols
-        ? strSymbols[0]
-        : string.charAt(0);
-
-      var trailing = strSymbols
-        ? _castSlice(strSymbols, 1).join('')
-        : string.slice(1);
-
-      return chr[methodName]() + trailing;
-    };
-  }
-
-  var _createCaseFirst = createCaseFirst;
-
-  /**
-   * Converts the first character of `string` to upper case.
-   *
-   * @static
-   * @memberOf _
-   * @since 4.0.0
-   * @category String
-   * @param {string} [string=''] The string to convert.
-   * @returns {string} Returns the converted string.
-   * @example
-   *
-   * _.upperFirst('fred');
-   * // => 'Fred'
-   *
-   * _.upperFirst('FRED');
-   * // => 'FRED'
-   */
-  var upperFirst = _createCaseFirst('toUpperCase');
-
-  var upperFirst_1 = upperFirst;
-
-  /**
-   * Converts the first character of `string` to upper case and the remaining
-   * to lower case.
-   *
-   * @static
-   * @memberOf _
-   * @since 3.0.0
-   * @category String
-   * @param {string} [string=''] The string to capitalize.
-   * @returns {string} Returns the capitalized string.
-   * @example
-   *
-   * _.capitalize('FRED');
-   * // => 'Fred'
-   */
-  function capitalize(string) {
-    return upperFirst_1(toString_1(string).toLowerCase());
-  }
-
-  var capitalize_1 = capitalize;
-
-  /**
-   * A specialized version of `_.reduce` for arrays without support for
-   * iteratee shorthands.
-   *
-   * @private
-   * @param {Array} [array] The array to iterate over.
-   * @param {Function} iteratee The function invoked per iteration.
-   * @param {*} [accumulator] The initial value.
-   * @param {boolean} [initAccum] Specify using the first element of `array` as
-   *  the initial value.
-   * @returns {*} Returns the accumulated value.
-   */
-  function arrayReduce(array, iteratee, accumulator, initAccum) {
-    var index = -1,
-        length = array == null ? 0 : array.length;
-
-    if (initAccum && length) {
-      accumulator = array[++index];
-    }
-    while (++index < length) {
-      accumulator = iteratee(accumulator, array[index], index, array);
-    }
-    return accumulator;
-  }
-
-  var _arrayReduce = arrayReduce;
-
-  /**
-   * The base implementation of `_.propertyOf` without support for deep paths.
-   *
-   * @private
-   * @param {Object} object The object to query.
-   * @returns {Function} Returns the new accessor function.
-   */
-  function basePropertyOf(object) {
-    return function(key) {
-      return object == null ? undefined : object[key];
-    };
-  }
-
-  var _basePropertyOf = basePropertyOf;
-
-  /** Used to map Latin Unicode letters to basic Latin letters. */
-  var deburredLetters = {
-    // Latin-1 Supplement block.
-    '\xc0': 'A',  '\xc1': 'A', '\xc2': 'A', '\xc3': 'A', '\xc4': 'A', '\xc5': 'A',
-    '\xe0': 'a',  '\xe1': 'a', '\xe2': 'a', '\xe3': 'a', '\xe4': 'a', '\xe5': 'a',
-    '\xc7': 'C',  '\xe7': 'c',
-    '\xd0': 'D',  '\xf0': 'd',
-    '\xc8': 'E',  '\xc9': 'E', '\xca': 'E', '\xcb': 'E',
-    '\xe8': 'e',  '\xe9': 'e', '\xea': 'e', '\xeb': 'e',
-    '\xcc': 'I',  '\xcd': 'I', '\xce': 'I', '\xcf': 'I',
-    '\xec': 'i',  '\xed': 'i', '\xee': 'i', '\xef': 'i',
-    '\xd1': 'N',  '\xf1': 'n',
-    '\xd2': 'O',  '\xd3': 'O', '\xd4': 'O', '\xd5': 'O', '\xd6': 'O', '\xd8': 'O',
-    '\xf2': 'o',  '\xf3': 'o', '\xf4': 'o', '\xf5': 'o', '\xf6': 'o', '\xf8': 'o',
-    '\xd9': 'U',  '\xda': 'U', '\xdb': 'U', '\xdc': 'U',
-    '\xf9': 'u',  '\xfa': 'u', '\xfb': 'u', '\xfc': 'u',
-    '\xdd': 'Y',  '\xfd': 'y', '\xff': 'y',
-    '\xc6': 'Ae', '\xe6': 'ae',
-    '\xde': 'Th', '\xfe': 'th',
-    '\xdf': 'ss',
-    // Latin Extended-A block.
-    '\u0100': 'A',  '\u0102': 'A', '\u0104': 'A',
-    '\u0101': 'a',  '\u0103': 'a', '\u0105': 'a',
-    '\u0106': 'C',  '\u0108': 'C', '\u010a': 'C', '\u010c': 'C',
-    '\u0107': 'c',  '\u0109': 'c', '\u010b': 'c', '\u010d': 'c',
-    '\u010e': 'D',  '\u0110': 'D', '\u010f': 'd', '\u0111': 'd',
-    '\u0112': 'E',  '\u0114': 'E', '\u0116': 'E', '\u0118': 'E', '\u011a': 'E',
-    '\u0113': 'e',  '\u0115': 'e', '\u0117': 'e', '\u0119': 'e', '\u011b': 'e',
-    '\u011c': 'G',  '\u011e': 'G', '\u0120': 'G', '\u0122': 'G',
-    '\u011d': 'g',  '\u011f': 'g', '\u0121': 'g', '\u0123': 'g',
-    '\u0124': 'H',  '\u0126': 'H', '\u0125': 'h', '\u0127': 'h',
-    '\u0128': 'I',  '\u012a': 'I', '\u012c': 'I', '\u012e': 'I', '\u0130': 'I',
-    '\u0129': 'i',  '\u012b': 'i', '\u012d': 'i', '\u012f': 'i', '\u0131': 'i',
-    '\u0134': 'J',  '\u0135': 'j',
-    '\u0136': 'K',  '\u0137': 'k', '\u0138': 'k',
-    '\u0139': 'L',  '\u013b': 'L', '\u013d': 'L', '\u013f': 'L', '\u0141': 'L',
-    '\u013a': 'l',  '\u013c': 'l', '\u013e': 'l', '\u0140': 'l', '\u0142': 'l',
-    '\u0143': 'N',  '\u0145': 'N', '\u0147': 'N', '\u014a': 'N',
-    '\u0144': 'n',  '\u0146': 'n', '\u0148': 'n', '\u014b': 'n',
-    '\u014c': 'O',  '\u014e': 'O', '\u0150': 'O',
-    '\u014d': 'o',  '\u014f': 'o', '\u0151': 'o',
-    '\u0154': 'R',  '\u0156': 'R', '\u0158': 'R',
-    '\u0155': 'r',  '\u0157': 'r', '\u0159': 'r',
-    '\u015a': 'S',  '\u015c': 'S', '\u015e': 'S', '\u0160': 'S',
-    '\u015b': 's',  '\u015d': 's', '\u015f': 's', '\u0161': 's',
-    '\u0162': 'T',  '\u0164': 'T', '\u0166': 'T',
-    '\u0163': 't',  '\u0165': 't', '\u0167': 't',
-    '\u0168': 'U',  '\u016a': 'U', '\u016c': 'U', '\u016e': 'U', '\u0170': 'U', '\u0172': 'U',
-    '\u0169': 'u',  '\u016b': 'u', '\u016d': 'u', '\u016f': 'u', '\u0171': 'u', '\u0173': 'u',
-    '\u0174': 'W',  '\u0175': 'w',
-    '\u0176': 'Y',  '\u0177': 'y', '\u0178': 'Y',
-    '\u0179': 'Z',  '\u017b': 'Z', '\u017d': 'Z',
-    '\u017a': 'z',  '\u017c': 'z', '\u017e': 'z',
-    '\u0132': 'IJ', '\u0133': 'ij',
-    '\u0152': 'Oe', '\u0153': 'oe',
-    '\u0149': "'n", '\u017f': 's'
-  };
-
-  /**
-   * Used by `_.deburr` to convert Latin-1 Supplement and Latin Extended-A
-   * letters to basic Latin letters.
-   *
-   * @private
-   * @param {string} letter The matched letter to deburr.
-   * @returns {string} Returns the deburred letter.
-   */
-  var deburrLetter = _basePropertyOf(deburredLetters);
-
-  var _deburrLetter = deburrLetter;
-
-  /** Used to match Latin Unicode letters (excluding mathematical operators). */
-  var reLatin = /[\xc0-\xd6\xd8-\xf6\xf8-\xff\u0100-\u017f]/g;
-
-  /** Used to compose unicode character classes. */
-  var rsComboMarksRange$2 = '\\u0300-\\u036f',
-      reComboHalfMarksRange$2 = '\\ufe20-\\ufe2f',
-      rsComboSymbolsRange$2 = '\\u20d0-\\u20ff',
-      rsComboRange$2 = rsComboMarksRange$2 + reComboHalfMarksRange$2 + rsComboSymbolsRange$2;
-
-  /** Used to compose unicode capture groups. */
-  var rsCombo$1 = '[' + rsComboRange$2 + ']';
-
-  /**
-   * Used to match [combining diacritical marks](https://en.wikipedia.org/wiki/Combining_Diacritical_Marks) and
-   * [combining diacritical marks for symbols](https://en.wikipedia.org/wiki/Combining_Diacritical_Marks_for_Symbols).
-   */
-  var reComboMark = RegExp(rsCombo$1, 'g');
-
-  /**
-   * Deburrs `string` by converting
-   * [Latin-1 Supplement](https://en.wikipedia.org/wiki/Latin-1_Supplement_(Unicode_block)#Character_table)
-   * and [Latin Extended-A](https://en.wikipedia.org/wiki/Latin_Extended-A)
-   * letters to basic Latin letters and removing
-   * [combining diacritical marks](https://en.wikipedia.org/wiki/Combining_Diacritical_Marks).
-   *
-   * @static
-   * @memberOf _
-   * @since 3.0.0
-   * @category String
-   * @param {string} [string=''] The string to deburr.
-   * @returns {string} Returns the deburred string.
-   * @example
-   *
-   * _.deburr('déjà vu');
-   * // => 'deja vu'
-   */
-  function deburr(string) {
-    string = toString_1(string);
-    return string && string.replace(reLatin, _deburrLetter).replace(reComboMark, '');
-  }
-
-  var deburr_1 = deburr;
-
-  /** Used to match words composed of alphanumeric characters. */
-  var reAsciiWord = /[^\x00-\x2f\x3a-\x40\x5b-\x60\x7b-\x7f]+/g;
-
-  /**
-   * Splits an ASCII `string` into an array of its words.
-   *
-   * @private
-   * @param {string} The string to inspect.
-   * @returns {Array} Returns the words of `string`.
-   */
-  function asciiWords(string) {
-    return string.match(reAsciiWord) || [];
-  }
-
-  var _asciiWords = asciiWords;
-
-  /** Used to detect strings that need a more robust regexp to match words. */
-  var reHasUnicodeWord = /[a-z][A-Z]|[A-Z]{2}[a-z]|[0-9][a-zA-Z]|[a-zA-Z][0-9]|[^a-zA-Z0-9 ]/;
-
-  /**
-   * Checks if `string` contains a word composed of Unicode symbols.
-   *
-   * @private
-   * @param {string} string The string to inspect.
-   * @returns {boolean} Returns `true` if a word is found, else `false`.
-   */
-  function hasUnicodeWord(string) {
-    return reHasUnicodeWord.test(string);
-  }
-
-  var _hasUnicodeWord = hasUnicodeWord;
-
-  /** Used to compose unicode character classes. */
-  var rsAstralRange$2 = '\\ud800-\\udfff',
-      rsComboMarksRange$3 = '\\u0300-\\u036f',
-      reComboHalfMarksRange$3 = '\\ufe20-\\ufe2f',
-      rsComboSymbolsRange$3 = '\\u20d0-\\u20ff',
-      rsComboRange$3 = rsComboMarksRange$3 + reComboHalfMarksRange$3 + rsComboSymbolsRange$3,
-      rsDingbatRange = '\\u2700-\\u27bf',
-      rsLowerRange = 'a-z\\xdf-\\xf6\\xf8-\\xff',
-      rsMathOpRange = '\\xac\\xb1\\xd7\\xf7',
-      rsNonCharRange = '\\x00-\\x2f\\x3a-\\x40\\x5b-\\x60\\x7b-\\xbf',
-      rsPunctuationRange = '\\u2000-\\u206f',
-      rsSpaceRange = ' \\t\\x0b\\f\\xa0\\ufeff\\n\\r\\u2028\\u2029\\u1680\\u180e\\u2000\\u2001\\u2002\\u2003\\u2004\\u2005\\u2006\\u2007\\u2008\\u2009\\u200a\\u202f\\u205f\\u3000',
-      rsUpperRange = 'A-Z\\xc0-\\xd6\\xd8-\\xde',
-      rsVarRange$2 = '\\ufe0e\\ufe0f',
-      rsBreakRange = rsMathOpRange + rsNonCharRange + rsPunctuationRange + rsSpaceRange;
-
-  /** Used to compose unicode capture groups. */
-  var rsApos = "['\u2019]",
-      rsBreak = '[' + rsBreakRange + ']',
-      rsCombo$2 = '[' + rsComboRange$3 + ']',
-      rsDigits = '\\d+',
-      rsDingbat = '[' + rsDingbatRange + ']',
-      rsLower = '[' + rsLowerRange + ']',
-      rsMisc = '[^' + rsAstralRange$2 + rsBreakRange + rsDigits + rsDingbatRange + rsLowerRange + rsUpperRange + ']',
-      rsFitz$1 = '\\ud83c[\\udffb-\\udfff]',
-      rsModifier$1 = '(?:' + rsCombo$2 + '|' + rsFitz$1 + ')',
-      rsNonAstral$1 = '[^' + rsAstralRange$2 + ']',
-      rsRegional$1 = '(?:\\ud83c[\\udde6-\\uddff]){2}',
-      rsSurrPair$1 = '[\\ud800-\\udbff][\\udc00-\\udfff]',
-      rsUpper = '[' + rsUpperRange + ']',
-      rsZWJ$2 = '\\u200d';
-
-  /** Used to compose unicode regexes. */
-  var rsMiscLower = '(?:' + rsLower + '|' + rsMisc + ')',
-      rsMiscUpper = '(?:' + rsUpper + '|' + rsMisc + ')',
-      rsOptContrLower = '(?:' + rsApos + '(?:d|ll|m|re|s|t|ve))?',
-      rsOptContrUpper = '(?:' + rsApos + '(?:D|LL|M|RE|S|T|VE))?',
-      reOptMod$1 = rsModifier$1 + '?',
-      rsOptVar$1 = '[' + rsVarRange$2 + ']?',
-      rsOptJoin$1 = '(?:' + rsZWJ$2 + '(?:' + [rsNonAstral$1, rsRegional$1, rsSurrPair$1].join('|') + ')' + rsOptVar$1 + reOptMod$1 + ')*',
-      rsOrdLower = '\\d*(?:1st|2nd|3rd|(?![123])\\dth)(?=\\b|[A-Z_])',
-      rsOrdUpper = '\\d*(?:1ST|2ND|3RD|(?![123])\\dTH)(?=\\b|[a-z_])',
-      rsSeq$1 = rsOptVar$1 + reOptMod$1 + rsOptJoin$1,
-      rsEmoji = '(?:' + [rsDingbat, rsRegional$1, rsSurrPair$1].join('|') + ')' + rsSeq$1;
-
-  /** Used to match complex or compound words. */
-  var reUnicodeWord = RegExp([
-    rsUpper + '?' + rsLower + '+' + rsOptContrLower + '(?=' + [rsBreak, rsUpper, '$'].join('|') + ')',
-    rsMiscUpper + '+' + rsOptContrUpper + '(?=' + [rsBreak, rsUpper + rsMiscLower, '$'].join('|') + ')',
-    rsUpper + '?' + rsMiscLower + '+' + rsOptContrLower,
-    rsUpper + '+' + rsOptContrUpper,
-    rsOrdUpper,
-    rsOrdLower,
-    rsDigits,
-    rsEmoji
-  ].join('|'), 'g');
-
-  /**
-   * Splits a Unicode `string` into an array of its words.
-   *
-   * @private
-   * @param {string} The string to inspect.
-   * @returns {Array} Returns the words of `string`.
-   */
-  function unicodeWords(string) {
-    return string.match(reUnicodeWord) || [];
-  }
-
-  var _unicodeWords = unicodeWords;
-
-  /**
-   * Splits `string` into an array of its words.
-   *
-   * @static
-   * @memberOf _
-   * @since 3.0.0
-   * @category String
-   * @param {string} [string=''] The string to inspect.
-   * @param {RegExp|string} [pattern] The pattern to match words.
-   * @param- {Object} [guard] Enables use as an iteratee for methods like `_.map`.
-   * @returns {Array} Returns the words of `string`.
-   * @example
-   *
-   * _.words('fred, barney, & pebbles');
-   * // => ['fred', 'barney', 'pebbles']
-   *
-   * _.words('fred, barney, & pebbles', /[^, ]+/g);
-   * // => ['fred', 'barney', '&', 'pebbles']
-   */
-  function words(string, pattern, guard) {
-    string = toString_1(string);
-    pattern = guard ? undefined : pattern;
-
-    if (pattern === undefined) {
-      return _hasUnicodeWord(string) ? _unicodeWords(string) : _asciiWords(string);
-    }
-    return string.match(pattern) || [];
-  }
-
-  var words_1 = words;
-
-  /** Used to compose unicode capture groups. */
-  var rsApos$1 = "['\u2019]";
-
-  /** Used to match apostrophes. */
-  var reApos = RegExp(rsApos$1, 'g');
-
-  /**
-   * Creates a function like `_.camelCase`.
-   *
-   * @private
-   * @param {Function} callback The function to combine each word.
-   * @returns {Function} Returns the new compounder function.
-   */
-  function createCompounder(callback) {
-    return function(string) {
-      return _arrayReduce(words_1(deburr_1(string).replace(reApos, '')), callback, '');
-    };
-  }
-
-  var _createCompounder = createCompounder;
-
-  /**
-   * Converts `string` to [camel case](https://en.wikipedia.org/wiki/CamelCase).
-   *
-   * @static
-   * @memberOf _
-   * @since 3.0.0
-   * @category String
-   * @param {string} [string=''] The string to convert.
-   * @returns {string} Returns the camel cased string.
-   * @example
-   *
-   * _.camelCase('Foo Bar');
-   * // => 'fooBar'
-   *
-   * _.camelCase('--foo-bar--');
-   * // => 'fooBar'
-   *
-   * _.camelCase('__FOO_BAR__');
-   * // => 'fooBar'
-   */
-  var camelCase = _createCompounder(function(result, word, index) {
-    word = word.toLowerCase();
-    return result + (index ? capitalize_1(word) : word);
-  });
-
-  var camelcase = camelCase;
-
-  /**
-   * Converts `string` to
-   * [kebab case](https://en.wikipedia.org/wiki/Letter_case#Special_case_styles).
-   *
-   * @static
-   * @memberOf _
-   * @since 3.0.0
-   * @category String
-   * @param {string} [string=''] The string to convert.
-   * @returns {string} Returns the kebab cased string.
-   * @example
-   *
-   * _.kebabCase('Foo Bar');
-   * // => 'foo-bar'
-   *
-   * _.kebabCase('fooBar');
-   * // => 'foo-bar'
-   *
-   * _.kebabCase('__FOO_BAR__');
-   * // => 'foo-bar'
-   */
-  var kebabCase$1 = _createCompounder(function(result, word, index) {
-    return result + (index ? '-' : '') + word.toLowerCase();
-  });
-
-  var kebabcase = kebabCase$1;
-
   const GLOBAL_REGISTRY = '__riot_registry__';
   const TMP_TAG_NAME_VARIABLE = '__CURRENT_RIOT_TAG_NAME__';
   window[GLOBAL_REGISTRY] = {};
@@ -32120,7 +31354,7 @@
     return {
       code: `${TMP_TAG_NAME_VARIABLE}=${tagName};(function (global){${code}})(window)`
         .replace('export default',
-          `global['${GLOBAL_REGISTRY}']['${camelcase(tagName)}'] =`
+          `global['${GLOBAL_REGISTRY}']['${tagName}'] =`
         ),
       map: {}
     }
@@ -32144,11 +31378,11 @@
 
     tags.forEach(({code}, i) => {
       const url = urls[i];
-      const tagNameRe = new RegExp(`${TMP_TAG_NAME_VARIABLE}=((.*?);)`);
+      const tagNameRe = new RegExp(`${TMP_TAG_NAME_VARIABLE}=(.*?);`);
       const tagName = tagNameRe.exec(code)[1];
 
       globalEval(code.replace(tagNameRe, ''), url);
-      register(kebabcase(tagName), window[GLOBAL_REGISTRY][camelcase(tagName)]);
+      register(tagName, window[GLOBAL_REGISTRY][tagName]);
     });
   }
 

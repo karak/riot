@@ -1,4 +1,4 @@
-/* Riot WIP, @license MIT */
+/* Riot v4.0.0-alpha.4, @license MIT */
 (function (global, factory) {
   typeof exports === 'object' && typeof module !== 'undefined' ? factory(exports) :
   typeof define === 'function' && define.amd ? define(['exports'], factory) :
@@ -7,14 +7,16 @@
 
   const
     COMPONENTS_IMPLEMENTATION_MAP = new Map(),
-    COMPONENTS_CREATION_MAP = new WeakMap(),
     MIXINS_MAP = new Map(),
+    PLUGINS_SET = new Set(),
+    DOM_COMPONENT_INSTANCE_PROPERTY = Symbol('riot-component'),
     IS_DIRECTIVE = 'is';
 
   var globals = /*#__PURE__*/Object.freeze({
     COMPONENTS_IMPLEMENTATION_MAP: COMPONENTS_IMPLEMENTATION_MAP,
-    COMPONENTS_CREATION_MAP: COMPONENTS_CREATION_MAP,
     MIXINS_MAP: MIXINS_MAP,
+    PLUGINS_SET: PLUGINS_SET,
+    DOM_COMPONENT_INSTANCE_PROPERTY: DOM_COMPONENT_INSTANCE_PROPERTY,
     IS_DIRECTIVE: IS_DIRECTIVE
   });
 
@@ -62,7 +64,7 @@
    * @returns {*} anything
    */
   function callOrAssign(source) {
-    return isFunction(source) ? source() : source
+    return isFunction(source) ? (source.constructor.name ? new source() : source()) : source
   }
 
   // doese simply nothing
@@ -229,19 +231,6 @@
   }
 
   /**
-   * Set multiple DOM attributes
-   * @param   {HTMLElement} element target element
-   * @param   {Object} attributes - object containing the attributes key values
-   * @returns {HTMLElement} - the original element received
-   */
-  function setAttributes(element, attributes) {
-    Object.entries(attributes).forEach(([key, value]) => {
-      setAttribute(element, key, value);
-    });
-    return element
-  }
-
-  /**
    * Get the tag name of any DOM node
    * @param   {HTMLElement} element - DOM node we want to inspect
    * @returns {string} name to identify this dom node in riot
@@ -273,10 +262,10 @@
   };
 
   /*! (c) Andrea Giammarchi - ISC */
-  var self$1 = null || /* istanbul ignore next */ {};
-  try { self$1.Map = Map; }
+  var self = null || /* istanbul ignore next */ {};
+  try { self.Map = Map; }
   catch (Map) {
-    self$1.Map = function Map() {
+    self.Map = function Map() {
       var i = 0;
       var k = [];
       var v = [];
@@ -306,7 +295,7 @@
       }
     };
   }
-  var Map$1 = self$1.Map;
+  var Map$1 = self.Map;
 
   const append = (get, parent, children, start, end, before) => {
     if ((end - start) < 2)
@@ -894,26 +883,6 @@
     return futureNodes;
   };
 
-  /**
-   * Safe expression/bindings value evaluation, in case of errors we return a fallback value
-   * @param   {Function} fn  - function to evaluate
-   * @param   {*}        fallback - a fallback return value
-   * @param   {boolean}  debug - if true the error will be logged
-   * @returns {*} result of the computation or a fallback value
-   */
-
-  function evalOrFallback(fn, fallback, debug) {
-    try {
-      return fn()
-    } catch (error) {
-      if (debug) {
-        console.error(debug); // eslint-disable-line
-      }
-
-      return fallback
-    }
-  }
-
   const EachBinding = Object.seal({
     // dynamic binding properties
     childrenMap: null,
@@ -935,7 +904,7 @@
     },
     update(scope) {
       const { placeholder } = this;
-      const collection = evalOrFallback(() => this.evaluate(scope), []);
+      const collection = this.evaluate(scope);
       const items = collection ? Array.from(collection) : [];
       const parent = placeholder.parentNode;
 
@@ -1038,7 +1007,7 @@
         return
       }
 
-      const tag = oldItem ? oldItem.tag : template.clone(root);
+      const tag = oldItem ? oldItem.tag : template.clone();
       const el = oldItem ? tag.el : root.cloneNode();
 
       if (!oldItem) {
@@ -1081,7 +1050,7 @@
       offset,
       condition,
       evaluate,
-      template,
+      template: template.createDOM(node),
       getKey,
       indexName,
       itemName,
@@ -1105,7 +1074,7 @@
       return this.update(scope)
     },
     update(scope) {
-      const value = !!evalOrFallback(() => this.evaluate(scope), false);
+      const value = !!this.evaluate(scope);
       const mustMount = !this.value && value;
       const mustUnmount = this.value && !value;
 
@@ -1113,7 +1082,7 @@
       case mustMount:
         swap(this.node, this.placeholder);
         if (this.template) {
-          this.template = this.template.clone(this.node);
+          this.template = this.template.clone();
           this.template.mount(this.node, scope);
         }
         break
@@ -1152,7 +1121,7 @@
       node,
       evaluate,
       placeholder: document.createTextNode(''),
-      template
+      template: template.createDOM(node)
     }
   }
 
@@ -1232,7 +1201,7 @@
    * @returns {string} the node attribute modifier method name
    */
   function getMethod(value) {
-    return value ? SET_ATTIBUTE : REMOVE_ATTRIBUTE
+    return value && typeof value !== 'object' ? SET_ATTIBUTE : REMOVE_ATTRIBUTE
   }
 
   /**
@@ -1245,8 +1214,7 @@
     // be sure that expressions like selected={ true } will be always rendered as selected='selected'
     if (value === true) return name
 
-    // array values will be joined with spaces
-    return Array.isArray(value) ? value.join(' ') : value
+    return value
   }
 
   /**
@@ -1637,6 +1605,18 @@
     dom: null,
     el: null,
 
+    /**
+     * Create the template DOM structure that will be cloned on each mount
+     * @param   {HTMLElement} el - the root node
+     * @returns {TemplateChunk} self
+     */
+    createDOM(el) {
+      // make sure that the DOM gets created before cloning the template
+      this.dom = this.dom || createTemplateDOM(el, this.html);
+
+      return this
+    },
+
     // API methods
     /**
      * Attach the template to a DOM node
@@ -1651,8 +1631,8 @@
 
       this.el = el;
 
-      // create lazily the template fragment only once if it hasn't been created before
-      this.dom = this.dom || createTemplateDOM(el, this.html);
+      // create the DOM if it wasn't created before
+      this.createDOM(el);
 
       if (this.dom) injectDOM(el, this.dom.cloneNode(true));
 
@@ -1694,13 +1674,9 @@
     },
     /**
      * Clone the template chunk
-     * @param   {HTMLElement} el - template target DOM node
      * @returns {TemplateChunk} a clone of this object resetting the this.el property
      */
-    clone(el) {
-      // make sure that the DOM gets created before cloning the template
-      this.dom = this.dom || createTemplateDOM(el, this.html);
-
+    clone() {
       return {
         ...this,
         el: null
@@ -1780,6 +1756,108 @@
    * )
    */
 
+  /**
+   * Binding responsible for the slots
+   */
+  const Slot = Object.seal({
+    // dynamic binding properties
+    node: null,
+    name: null,
+    template: null,
+
+    // API methods
+    mount(scope) {
+      if (!this.template) {
+        this.node.parentNode.removeChild(this.node);
+      } else {
+        this.template.mount(this.node, scope);
+        moveSlotInnerContent(this.node);
+      }
+
+      return this
+    },
+    update(scope) {
+      if (!this.template) return this
+      this.template.update(scope);
+
+      return this
+    },
+    unmount(scope) {
+      if (!this.template) return this
+      this.template.unmount(scope);
+
+      return this
+    }
+  });
+
+  /**
+   * Move the inner content of the slots outside of them
+   * @param   {HTMLNode} slot - slot node
+   * @returns {undefined} it's a void function
+   */
+  function moveSlotInnerContent(slot) {
+    if (slot.firstChild) {
+      slot.parentNode.insertBefore(slot.firstChild, slot);
+      moveSlotInnerContent(slot);
+    }
+
+    if (slot.parentNode) {
+      slot.parentNode.removeChild(slot);
+    }
+  }
+
+  /**
+   * Create a single slot binding
+   * @param   {HTMLElement} root - component root
+   * @param   {HTMLElement} node - slot node
+   * @param   {string} options.name - slot id
+   * @param   {Array} options.slots - component slots
+   * @returns {Object} Slot binding object
+   */
+  function createSlot(root, node, { name, slots }) {
+    const templateData = slots.find(({id}) => id === name);
+
+    return {
+      ...Slot,
+      node,
+      name,
+      template: templateData && create$6(
+        templateData.html,
+        templateData.bindings
+      ).createDOM(root)
+    }
+  }
+
+  /**
+   * Create the object that will manage the slots
+   * @param   {HTMLElement} root - component root element
+   * @param   {Array} slots - slots objects containing html and bindings
+   * @return  {Object} tag like interface that will manage all the slots
+   */
+  function createSlots(root, slots) {
+    const slotNodes = $$('slot', root);
+    const slotsBindings = slotNodes.map(node => {
+      const name = getAttribute(node, 'name') || 'default';
+      return createSlot(root, node, { name, slots })
+    });
+
+    return {
+      mount(scope) {
+        slotsBindings.forEach(s => s.mount(scope));
+        return this
+      },
+      update(scope) {
+        slotsBindings.forEach(s => s.update(scope));
+        return this
+      },
+      unmount(scope) {
+        slotsBindings.forEach(s => s.unmount(scope));
+        return this
+      }
+    }
+
+  }
+
   const WIN = getWindow();
   const CSS_BY_NAME = new Map();
 
@@ -1851,75 +1929,14 @@
     }
   }
 
-  function createCommonjsModule(fn, module) {
-  	return module = { exports: {} }, fn(module, module.exports), module.exports;
-  }
-
-  var kebabCase = createCommonjsModule(function (module, exports) {
-  var KEBAB_REGEX = /[A-Z\u00C0-\u00D6\u00D8-\u00DE]/g;
-  var REVERSE_REGEX = /-[a-z\u00E0-\u00F6\u00F8-\u00FE]/g;
-
-  module.exports = exports = function kebabCase(str) {
-  	return str.replace(KEBAB_REGEX, function (match) {
-  		return '-' + match.toLowerCase();
-  	});
-  };
-
-  exports.reverse = function (str) {
-  	return str.replace(REVERSE_REGEX, function (match) {
-  		return match.slice(1).toUpperCase();
-  	});
-  };
-  });
-  var kebabCase_1 = kebabCase.reverse;
-
-  /**
-   * convert keys and values
-   *
-   * @param {{}} obj source object
-   * @param {Function} convert converting function
-   * @returns {{}} converted object
-   */
-  function convertKeyAndValue(obj, convert) {
-    return Object.entries(obj).reduce((accum, [key, value]) => {
-      const [newKey, newValue] = convert([key, value]);
-      accum[newKey] = newValue;
-      return accum
-    }, {})
-  }
-
-  /**
-   * convert keys to kebab-case from camel-case
-   *
-   * @param {{}} obj source object
-   * @returns {{}} converted object
-   */
-  function toKebabCase(obj) {
-    return convertKeyAndValue(obj, ([key, value]) => [kebabCase(key), value])
-  }
-
-  /**
-   * convert keys to camel-case from kebab-case
-   *
-   * @param {{}} obj source object
-   * @returns {{}} converted object
-   */
-  function fromKebabCase(obj) {
-    // eslint-disable-next-line fp/no-mutating-methods
-    return convertKeyAndValue(obj, ([key, value]) => [kebabCase.reverse(key), value])
-  }
-
-  const COMPONENT_CORE = Object.freeze({
+  const COMPONENT_CORE_HELPERS = Object.freeze({
     // component helpers
     $(selector){ return $(selector, this.root) },
     $$(selector){ return $$(selector, this.root) },
     mixin(name) {
       // extend this component with this mixin
-      Object.assign(this, MIXINS_MAP.get(name));
-    },
-    // defined during the component creation
-    css: null,
-    template: null
+      Object.assing(this, MIXINS_MAP.get(name));
+    }
   });
 
   const COMPONENT_LIFECYCLE_METHODS = Object.freeze({
@@ -1931,12 +1948,47 @@
     onUnmounted: noop
   });
 
-  const EMPTY_TEMPLATE_INTERFACE = {
+  const MOCK_TEMPLATE_INTERFACE = {
     update: noop,
     mount: noop,
     unmount: noop,
-    clone: noop
+    clone: noop,
+    createDOM: noop
   };
+
+
+  /**
+   * Create the component interface needed for the compiled components
+   * @param   {string} options.css - component css
+   * @param   {Function} options.template - functon that will return the dom-bindings template function
+   * @param   {Object} options.tag - component interface
+   * @param   {string} options.name - component name
+   * @returns {Object} component like interface
+   */
+  function createComponent({css, template: template$$1, tag, name}) {
+    const component = defineComponent({
+      css,
+      template: template$$1,
+      tag,
+      name
+    });
+
+    return slotsAndAttributes => {
+      const instance = component(slotsAndAttributes);
+
+      return {
+        mount(element, parentScope, state) {
+          return instance.mount(element, state, parentScope)
+        },
+        update(parentScope, state) {
+          return instance.update(state, parentScope)
+        },
+        unmount() {
+          return instance.unmount()
+        }
+      }
+    }
+  }
 
   /**
    * Component definition function
@@ -1950,17 +2002,17 @@
     // add the component css into the DOM
     if (css && name) cssManager.add(name, css);
 
-    return curry(createComponent)(defineProperties({
+    return curry(enhanceComponentAPI)(defineProperties({
       ...COMPONENT_LIFECYCLE_METHODS,
-      ...componentAPI,
-      // defined during the component creation
       state: {},
       props: {},
+      ...componentAPI,
+      // defined during the component creation
       slots: null,
       root: null
     }, {
       // these properties should not be overriden
-      ...COMPONENT_CORE,
+      ...COMPONENT_CORE_HELPERS,
       css,
       template: template$$1 ? template$$1(
         create$6,
@@ -1969,7 +2021,7 @@
         function(name) {
           return (componentAPI.components || {})[name] || COMPONENTS_IMPLEMENTATION_MAP.get(name)
         }
-      ) : EMPTY_TEMPLATE_INTERFACE
+      ) : MOCK_TEMPLATE_INTERFACE
     }))
   }
 
@@ -1978,74 +2030,119 @@
    * @param   {HTMLElement} element - component root
    * @param   {Array}  attributeExpressions - attribute expressions generated by the riot compiler
    * @param   {Object} scope - current scope
+   * @param   {Object} currentProps - current component properties
    * @returns {Object} attributes key value pairs
    */
-  function evaluateProps(element, attributeExpressions = [], scope) {
-    return attributeExpressions.length ?
-      evaluateAttributeExpressions(attributeExpressions, scope) :
-      fromKebabCase(getAttributes(element))
+  function evaluateProps(element, attributeExpressions = [], scope, currentProps) {
+    if (attributeExpressions.length) {
+      return scope ? evaluateAttributeExpressions(attributeExpressions, scope) : currentProps
+    }
+
+    return getAttributes(element)
   }
 
   /**
-   * Component creation factory function
+   * Create the bindings to update the component attributes
+   * @param   {Array} attributes - list of attribute bindings
+   * @returns {TemplateChunk} - template bindings object
+   */
+  function createAttributeBindings(attributes) {
+    return create$6(null, [{
+      expressions: (attributes || []).map(attr => {
+        return {
+          type: expressionTypes.ATTRIBUTE,
+          ...attr
+        }
+      })
+    }])
+  }
+
+  /**
+   * Run the component instance through all the plugins set by the user
+   * @param   {Object} component - component instance
+   * @returns {Object} the component enhanced by the plugins
+   */
+  function runPlugins(component) {
+    return [...PLUGINS_SET].forEach(fn => fn(component)) || component
+  }
+
+  /**
+   * Component creation factory function that will enhance the user provided API
    * @param   {Object} component - a component implementation previously defined
    * @param   {Array} options.slots - component slots generated via riot compiler
    * @param   {Array} options.attributes - attribute expressions generated via riot compiler
    * @returns {Riot.Component} a riot component instance
    */
-  function createComponent(component, {slots, attributes}) {
-    // if this component was manually mounted its DOM attributes are likely not attribute expressions
-    // generated via riot compiler
-    const shouldSetAttributes = attributes && attributes.length;
+  function enhanceComponentAPI(component, {slots, attributes}) {
+    const attributeBindings = createAttributeBindings(attributes);
 
     return autobindMethods(
-      defineProperties(Object.create(component), {
-        slots,
-        mount(element, state = {}, props = {}) {
-          this.props = evaluateProps(element, attributes, props);
-          this.state = callOrAssign(state);
+      runPlugins(
+        defineProperties(Object.create(component), {
+          mount(element, state = {}, props) {
+            this.props = evaluateProps(element, attributes, props, {});
 
-          defineProperties(this, {
-            root: element,
-            template: this.template.clone(element)
-          });
+            this.state = {
+              ...this.state,
+              ...callOrAssign(state)
+            };
 
-          this.onBeforeMount();
-          shouldSetAttributes && setAttributes(this.root, toKebabCase(this.props));
-          this.template.mount(element, this);
-          this.onMounted();
+            defineProperties(this, {
+              root: element,
+              attributes: attributeBindings.createDOM(element).clone(),
+              template: this.template.createDOM(element).clone()
+            });
 
-          return this
-        },
-        update(state = {}, props = {}) {
-          const newProps = evaluateProps(this.root, attributes, props);
+            // link this object to the DOM node
+            element[DOM_COMPONENT_INSTANCE_PROPERTY] = this;
 
-          if (this.onBeforeUpdate(newProps, state) === false) return
+            this.onBeforeMount();
 
-          this.props = {
-            ...this.props,
-            ...newProps
-          };
+            // handlte the template and its attributes
+            this.attributes.mount(element, props);
+            this.template.mount(element, this);
 
-          this.state = {
-            ...this.state,
-            ...state
-          };
+            // create the slots and mount them
+            defineProperty(this, 'slots', createSlots(element, slots || []));
+            this.slots.mount(props);
 
-          shouldSetAttributes && setAttributes(this.root, toKebabCase(this.props));
-          this.template.update(this);
-          this.onUpdated();
+            this.onMounted();
 
-          return this
-        },
-        unmount(removeRoot) {
-          this.onBeforeUnmount();
-          this.template.unmount(this, removeRoot === true);
-          this.onUnmounted();
+            return this
+          },
+          update(state = {}, props) {
+            const newProps = evaluateProps(this.root, attributes, props, this.props);
 
-          return this
-        }
-      }),
+            if (this.onBeforeUpdate(newProps, state) === false) return
+
+            this.props = newProps;
+
+            this.state = {
+              ...this.state,
+              ...state
+            };
+
+            if (props) {
+              this.attributes.update(props);
+              this.slots.update(props);
+            }
+
+            this.template.update(this);
+            this.onUpdated();
+
+            return this
+          },
+          unmount(removeRoot) {
+            this.onBeforeUnmount();
+            this.attributes.unmount();
+            this.slots.unmount();
+            this.template.unmount(this, removeRoot === true);
+            this.onUnmounted();
+
+            return this
+          }
+        })
+      ),
       Object.keys(component).filter(prop => isFunction(component[prop]))
     )
   }
@@ -2060,13 +2157,13 @@
   function mountComponent(element, initialState, componentName) {
     const name = componentName || getName(element);
     if (!COMPONENTS_IMPLEMENTATION_MAP.has(name)) panic(`The component named "${name}" was never registered`);
+
     const component = COMPONENTS_IMPLEMENTATION_MAP.get(name)({});
-    COMPONENTS_CREATION_MAP.set(element, component);
 
     return component.mount(element, {}, initialState)
   }
 
-  const { COMPONENTS_CREATION_MAP: COMPONENTS_CREATION_MAP$1, COMPONENTS_IMPLEMENTATION_MAP: COMPONENTS_IMPLEMENTATION_MAP$1, MIXINS_MAP: MIXINS_MAP$1 } = globals;
+  const { DOM_COMPONENT_INSTANCE_PROPERTY: DOM_COMPONENT_INSTANCE_PROPERTY$1, COMPONENTS_IMPLEMENTATION_MAP: COMPONENTS_IMPLEMENTATION_MAP$1, MIXINS_MAP: MIXINS_MAP$1, PLUGINS_SET: PLUGINS_SET$1 } = globals;
 
   /**
    * Riot public api
@@ -2081,29 +2178,7 @@
   function register(name, {css, template, tag}) {
     if (COMPONENTS_IMPLEMENTATION_MAP$1.has(name)) panic(`The component "${name}" was already registered`);
 
-    return COMPONENTS_IMPLEMENTATION_MAP$1.set(name, (...args) => {
-      const component = defineComponent({
-        css,
-        template,
-        tag,
-        name
-      })(...args);
-
-      // this object will be provided to the tag bindings generated via compiler
-      // the bindings will not be able to update the components state, they will only pass down
-      // the parentScope updates
-      return {
-        mount(element, parentScope, state) {
-          return component.mount(element, state, parentScope)
-        },
-        update(parentScope, state) {
-          return component.update(state, parentScope)
-        },
-        unmount() {
-          return component.unmount()
-        }
-      }
-    })
+    return COMPONENTS_IMPLEMENTATION_MAP$1.set(name, createComponent({name, css, template, tag}))
   }
 
   /**
@@ -2135,8 +2210,8 @@
    */
   function unmount(selector) {
     return $$(selector).map((element) => {
-      if (COMPONENTS_CREATION_MAP$1.has(element)) {
-        COMPONENTS_CREATION_MAP$1.get(element).unmount();
+      if (element[DOM_COMPONENT_INSTANCE_PROPERTY$1]) {
+        element[DOM_COMPONENT_INSTANCE_PROPERTY$1].unmount();
       }
       return element
     })
@@ -2157,25 +2232,27 @@
   }
 
   /**
-   * Function to define an anonymous component
-   * @param   {Object} component - this object should contain the component implementation,
-   * like css and/or template/render function
-   * @param   {Object} slotsAndAttributes - object containing the slots or attribute expressions
-   * you shouldn't normally need it but it might be handy for testing
-   * @returns {Riot.Component} a riot component instance
+   * Define a riot plugin
+   * @param   {Function} plugin - function that will receive all the components created
+   * @returns {Set} the set containing all the plugins installed
    */
-  const component = ({css, template, ...rest}, slotsAndAttributes = {}) => defineComponent({
-    css,
-    template,
-    tag: rest
-  })(slotsAndAttributes);
+  function install(plugin) {
+    if (!isFunction(plugin)) panic('Plugins must be of type function');
+    if (PLUGINS_SET$1.has(name)) panic('This plugin was already install');
+
+    PLUGINS_SET$1.add(plugin);
+
+    return PLUGINS_SET$1
+  }
 
   /** @type {string} current riot version */
-  const version = 'WIP';
+  const version = 'v4.0.0-alpha.4';
 
   // expose some internal stuff that might be used from external tools
   const __ = {
     cssManager,
+    createComponent,
+    defineComponent,
     globals
   };
 
@@ -2184,7 +2261,7 @@
   exports.mount = mount;
   exports.unmount = unmount;
   exports.mixin = mixin;
-  exports.component = component;
+  exports.install = install;
   exports.version = version;
   exports.__ = __;
 

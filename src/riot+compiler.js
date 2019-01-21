@@ -1,8 +1,6 @@
 import * as riot from './riot'
 import {$$,getAttribute} from './utils/dom'
 import {compile as compiler, registerPostprocessor} from '@riotjs/compiler'
-import camelCase from 'lodash/camelcase'
-import kebabCase from 'lodash/kebabcase'
 
 const GLOBAL_REGISTRY = '__riot_registry__'
 const TMP_TAG_NAME_VARIABLE = '__CURRENT_RIOT_TAG_NAME__'
@@ -25,9 +23,9 @@ function globalEval(js, url) {
 registerPostprocessor(async function(code, { tagName }){
   // cheap transpilation
   return {
-    code: `${TMP_TAG_NAME_VARIABLE}=${tagName};(function (global){${code}})(window)`
+    code: `${TMP_TAG_NAME_VARIABLE}=${tagName};(function (global){${code}})(this)`
       .replace('export default',
-        `global['${GLOBAL_REGISTRY}']['${camelCase(tagName)}'] =`
+        `global['${GLOBAL_REGISTRY}']['${tagName}'] =`
       ),
     map: {}
   }
@@ -51,11 +49,11 @@ async function compile() {
 
   tags.forEach(({code}, i) => {
     const url = urls[i]
-    const tagNameRe = new RegExp(`${TMP_TAG_NAME_VARIABLE}=((.*?);)`)
+    const tagNameRe = new RegExp(`${TMP_TAG_NAME_VARIABLE}=(.*?);`)
     const tagName = tagNameRe.exec(code)[1]
 
     globalEval(code.replace(tagNameRe, ''), url)
-    riot.register(kebabCase(tagName), window[GLOBAL_REGISTRY][camelCase(tagName)])
+    riot.register(tagName, window[GLOBAL_REGISTRY][tagName])
   })
 }
 
